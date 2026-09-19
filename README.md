@@ -1,6 +1,4 @@
 # tetris-python
-Tetris cause why not
-
 A pygame-based Tetris with wall kicks, ghost piece, hold, combos, and some juice
 (screen shake, particles, CRT scanlines).
 
