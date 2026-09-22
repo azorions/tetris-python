@@ -1,13 +1,15 @@
-"""Screen shake, line-clear particles and floating combo text.
+"""Screen shake, line-clear particles, floating callouts and the title backdrop.
 
-All three are pure presentation: they read events emitted by the game and never
-feed anything back into it.
+All of it is pure presentation: it reads events emitted by the game and never
+feeds anything back into it.
 """
+import math
 import random
 
 import pygame
 
 from . import theme as T
+from .game import Piece
 
 
 class Shake:
@@ -35,21 +37,31 @@ class Shake:
         if self.left <= 0:
             return (0, 0)
         decay = self.left / self.total
-        import math
         phase = math.sin((1 - decay) * math.pi * 4)
         dy = int(round(self.amp * decay * phase))
         dx = random.randint(-1, 1) * int(self.amp * decay) if self.random_dir else 0
         return (dx, dy)
 
 
+def to_rgb(color):
+    """A piece letter or an RGB/RGBA tuple as a plain (r, g, b); None if it is neither."""
+    if isinstance(color, str):
+        return T.PIECE.get(color)
+    try:
+        r, g, b = (int(c) for c in tuple(color)[:3])
+    except (TypeError, ValueError):
+        return None
+    return tuple(max(0, min(255, c)) for c in (r, g, b))
+
+
 class Particle:
     __slots__ = ("x", "y", "vx", "vy", "color", "life")
 
     def __init__(self, x, y, color, scale=1.0):
-        angle = random.uniform(-0.9, 0.9)
+        spread = random.uniform(-0.9, 0.9)      # sideways speed as a fraction of the upward speed
         speed = random.uniform(*T.PARTICLE_SPEED) * scale
         self.x, self.y = float(x), float(y)
-        self.vx = speed * angle
+        self.vx = speed * spread
         self.vy = -speed
         self.color = color
         self.life = float(T.PARTICLE_LIFE_MS)
@@ -59,16 +71,18 @@ class ParticleField:
     def __init__(self):
         self.items = []
         self.scale = 1.0                # layout scale: speed, gravity and chip size follow the window
+        self._chips = {}                # (rgb, size) -> chip; its alpha is set per blit
 
     def burst_row(self, layout, row: int, colors: list):
         """One burst per cleared cell, tinted with that cell's own colour.
 
-        colors may hold piece letters (as the grid does) or RGB tuples.
+        colors may hold piece letters (as the grid does) or RGB/RGBA tuples;
+        anything else is skipped here rather than failing later in draw().
         """
         for col, color in enumerate(colors):
-            if color is None:
+            rgb = to_rgb(color) if color is not None else None
+            if rgb is None:
                 continue
-            rgb = T.PIECE.get(color, color)
             r = layout.cell_rect(col, row)
             for _ in range(T.PARTICLES_PER_CELL):
                 self.items.append(Particle(r.centerx, r.centery, rgb, self.scale))
@@ -88,18 +102,21 @@ class ParticleField:
 
     def draw(self, surf):
         s = max(1, round(T.PARTICLE_SIZE * self.scale))
+        half = s / 2
         for p in self.items:
-            a = max(0, min(255, int(255 * (p.life / T.PARTICLE_LIFE_MS))))
-            chip = pygame.Surface((s, s), pygame.SRCALPHA)
-            chip.fill((*p.color, a))
-            surf.blit(chip, (int(p.x), int(p.y)))
+            chip = self._chips.get((p.color, s))
+            if chip is None:
+                chip = self._chips[(p.color, s)] = pygame.Surface((s, s))
+                chip.fill(p.color)
+            chip.set_alpha(max(0, min(255, int(255 * (p.life / T.PARTICLE_LIFE_MS)))))
+            surf.blit(chip, (int(p.x - half), int(p.y - half)))
 
 
 class FloatingText:
-    """Combo callout: scale in, hold, fade out."""
+    """Line-clear callout: scale in, hold, fade out. kicker is the small line above the headline."""
 
-    def __init__(self, text, sub, color):
-        self.text, self.sub, self.color = text, sub, color
+    def __init__(self, text, sub, color, kicker=None):
+        self.text, self.sub, self.color, self.kicker = text, sub, color, kicker
         self.t = 0.0
         self.total = T.COMBO_IN_MS + T.COMBO_HOLD_MS + T.COMBO_OUT_MS
 
@@ -118,3 +135,43 @@ class FloatingText:
             return 1.0, 255
         k = (self.t - T.COMBO_IN_MS - T.COMBO_HOLD_MS) / T.COMBO_OUT_MS
         return 1.0, max(0, int(255 * (1 - k)))
+
+
+class Drop:
+    """One tetromino of the title backdrop."""
+    __slots__ = ("cells", "cell", "color", "x", "y", "speed")
+
+    def __init__(self, layout, anywhere):
+        depth = random.choice((0.7, 1.0, 1.4))  # nearer pieces are bigger, brighter and faster
+        kind = random.choice("IJLOSTZ")
+        piece = Piece(kind).moved(drot=random.randrange(4))
+        ox, oy = piece.x, piece.y
+        self.cells = [(x - ox, y - oy) for x, y in piece.cells()]
+        self.cell = max(4, round(layout.cell * 1.6 * depth))
+        self.color = tuple(int(c * T.RAIN_GLOW * depth) for c in T.PIECE[kind])
+        self.x = random.uniform(-self.cell, layout.width - self.cell * 2)
+        self.y = random.uniform(-self.cell * 4, layout.height) if anywhere else -self.cell * 4.0
+        self.speed = random.uniform(*T.RAIN_SPEED) * depth * layout.scale
+
+
+class PieceRain:
+    """Dim outlined tetrominoes drifting down behind the title screens."""
+
+    def __init__(self):
+        self.items = []
+        self._size = None
+
+    def update(self, dt_ms, layout):
+        if self._size != (layout.width, layout.height):     # new window: scatter a fresh set
+            self._size = (layout.width, layout.height)
+            self.items = [Drop(layout, anywhere=True) for _ in range(T.RAIN_PIECES)]
+        dt = dt_ms / 1000.0
+        for d in self.items:
+            d.y += d.speed * dt
+        self.items = [d if d.y < layout.height else Drop(layout, anywhere=False) for d in self.items]
+
+    def draw(self, surf):
+        for d in self.items:
+            size = d.cell - max(1, d.cell // 8)
+            for cx, cy in d.cells:
+                pygame.draw.rect(surf, d.color, (int(d.x + cx * d.cell), int(d.y + cy * d.cell), size, size), width=1)

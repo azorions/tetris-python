@@ -1,7 +1,8 @@
-"""Single source of truth for colour, type and timing.
+"""Single source of truth for colour, type, timing and score values.
 
-Every value here comes straight off the GUI spec sheet. Nothing else in the
-codebase should hard-code a colour or a duration.
+Every value here comes straight off the GUI spec sheet or the Tetris
+guideline. Nothing else in the codebase should hard-code a colour or a
+duration.
 """
 
 # ---------------------------------------------------------------- surface ----
@@ -11,6 +12,7 @@ codebase should hard-code a colour or a duration.
 SURFACE_W = 880
 SURFACE_H = 760
 FPS = 60
+MAX_FRAME_MS = 50           # longer frames (window drag, hitch) are clamped so a stall can't lock or drop a piece
 
 # ----------------------------------------------------------------- colour ----
 PIECE = {
@@ -34,6 +36,8 @@ BODY = (207, 227, 230)
 ACCENT = (0, 240, 240)      # cyan: headings, selection glow, gravity bar
 HILITE = (240, 240, 0)      # yellow: selected menu row, combo text
 DANGER = (240, 0, 0)        # game over
+TSPIN = (190, 110, 255)     # light purple: T-spin callouts
+DEAD = (96, 110, 118)       # the stack after the game-over sweep
 WHITE = (255, 255, 255)
 KEYCAP_BG = (85, 105, 111)
 
@@ -75,6 +79,7 @@ LINES_PER_LEVEL = 10
 
 CLEAR_FLASH_MS = 90
 CLEAR_COLLAPSE_MS = 110
+LOCK_FLASH_MS = 100
 COMBO_IN_MS = 120
 COMBO_HOLD_MS = 380
 COMBO_OUT_MS = 200
@@ -82,6 +87,7 @@ LEVELUP_IN_MS = 140
 LEVELUP_HOLD_MS = 520
 LEVELUP_OUT_MS = 240
 GAMEOVER_SWEEP_MS = 400
+OVERLAY_FADE_MS = 220       # results scrim fades in after the sweep; keys wait for it
 
 SHAKE_LOCK = (2, 80)        # (pixels, ms)
 SHAKE_HARDDROP = (3, 90)
@@ -93,9 +99,28 @@ PARTICLE_SPEED = (60, 140)  # px/s upward burst range
 PARTICLE_GRAVITY = 420      # px/s^2
 PARTICLE_LIFE_MS = 400
 
+RAIN_PIECES = 11            # title-screen backdrop
+RAIN_SPEED = (14, 34)       # px/s at scale 1, times the piece's depth
+RAIN_GLOW = 0.16            # backdrop colour = piece colour x this x depth
+
+# ---------------------------------------------------------------- scoring ----
+# Guideline values, multiplied by the level at the time of the clear.
 SCORE_TABLE = {1: 100, 2: 300, 3: 500, 4: 800}
+TSPIN_TABLE = {0: 400, 1: 800, 2: 1200, 3: 1600}
+TSPIN_MINI_TABLE = {0: 100, 1: 200, 2: 400}
+PERFECT_CLEAR_TABLE = {1: 800, 2: 1200, 3: 1800, 4: 2000}
+COMBO_POINTS = 50           # x combo count x level
 SOFT_DROP_POINTS = 1
 HARD_DROP_POINTS = 2
+
+# ------------------------------------------------------------------ modes ----
+SPRINT_LINES = 40
+ULTRA_MS = 120_000
+
+# ------------------------------------------------------------------ sound ----
+SFX_VOLUME = 0.6            # mixer volume at the 100% setting
+MUSIC_VOLUME = 0.45
+MUSIC_BPM = 150
 
 
 def gravity_ms(level: int) -> int:
@@ -105,3 +130,18 @@ def gravity_ms(level: int) -> int:
 
 def clear_name(lines: int) -> str:
     return {1: "SINGLE", 2: "DOUBLE", 3: "TRIPLE", 4: "TETRIS"}.get(lines, "")
+
+
+def callout(lines: int, info: dict) -> tuple:
+    """(kicker, headline) for a lock's floating text, e.g. ("B2B", "TETRIS") or
+    ("T-SPIN", "DOUBLE"). kicker is the small line above the headline, or None."""
+    spin = {"full": "T-SPIN", "mini": "MINI T-SPIN"}.get(info.get("tspin"))
+    name = clear_name(lines)
+    if info.get("perfect"):
+        words = ("B2B" if info.get("b2b") else "", spin or "", name)
+        return " ".join(w for w in words if w), "PERFECT CLEAR"
+    if spin:
+        if not lines:
+            return None, spin
+        return ("B2B " + spin if info.get("b2b") else spin), name
+    return ("BACK-TO-BACK" if info.get("b2b") else None), name
